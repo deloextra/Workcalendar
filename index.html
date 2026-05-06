@@ -158,6 +158,8 @@ body{
   padding:4px 1px;min-height:52px;
   transition:transform .15s cubic-bezier(.32,1,.22,1);
   will-change:transform;touch-action:manipulation;
+  -webkit-user-select:none;user-select:none;
+  -webkit-user-drag:none;
 }
 .day:active{transform:scale(.84)}
 .day.tapped{animation:dayPop .22s cubic-bezier(.32,1,.22,1) forwards}
@@ -247,11 +249,11 @@ body.sheet-open{overflow:hidden;position:fixed;width:100%}
   border:0.5px solid var(--sep);
   overflow:hidden;
   background:var(--bg2);
-  cursor:grab;
+  cursor:default;
   touch-action:none;
   -webkit-user-select:none;user-select:none;
 }
-.drum-wrap:active{cursor:grabbing}
+.drum-wrap:active{cursor:default}
 .drum-wrap-sm{border-radius:40px}
 .drum-wrap-sm .drum-overlay{border-radius:36px}
 
@@ -1122,6 +1124,26 @@ function calcWorked(dow,s,isFesta){
   return baseHrs(dow);
 }
 
+async function saveStartDateCloud(dateStr){
+  if(!window._USER_ID_OVERRIDE) return;
+  try{
+    await supa.from('calendario').upsert({
+      user_id:window._USER_ID_OVERRIDE,
+      day_key:'__meta__',
+      data:{startDate:dateStr},
+      updated_at:new Date().toISOString()
+    },{onConflict:'user_id,day_key'});
+  }catch(e){console.warn('[meta] saveStartDate fail',e.message)}
+}
+async function loadStartDateCloud(){
+  if(!window._USER_ID_OVERRIDE) return null;
+  try{
+    const {data,error}=await supa.from('calendario').select('data').eq('user_id',window._USER_ID_OVERRIDE).eq('day_key','__meta__').single();
+    if(error||!data) return null;
+    return data.data?.startDate||null;
+  }catch(e){return null}
+}
+
 /* ════ CLOUD SYNC ════ */
 function saveQueue(){localStorage.setItem(LS_QUEUE_KEY,JSON.stringify(offlineQueue))}
 function saveLocal(key,entry){
@@ -1170,7 +1192,18 @@ async function loadFromCloud(){
     const {data,error}=await supa.from('calendario').select('day_key,data,updated_at').eq('user_id',window._USER_ID_OVERRIDE);
     if(error) throw new Error(error.message);
     const cloudMap={};
-    if(data) data.forEach(r=>{cloudMap[r.day_key]={data:r.data,ts:r.updated_at}});
+    if(data) data.forEach(r=>{
+      if(r.day_key==='__meta__'){
+        // gestisci startDate dal cloud
+        const cloudStart=r.data?.startDate;
+        if(cloudStart){
+          const setup=JSON.parse(localStorage.getItem('cal_setup_v1')||'null');
+          if(setup&&!setup.startDate){setup.startDate=cloudStart;localStorage.setItem('cal_setup_v1',JSON.stringify(setup));}
+        }
+        return; // non includere __meta__ nel merge normale
+      }
+      cloudMap[r.day_key]={data:r.data,ts:r.updated_at};
+    });
     const mergedDb={},mergedTs={},toPush=[];
     const allKeys=new Set([...Object.keys(cloudMap),...Object.keys(localTs)]);
     for(const key of allKeys){
@@ -1452,7 +1485,7 @@ function buildDrum(id, values, fmtFn) {
     d.velY = 0;
     d.lastT = Date.now();
     listEl.style.transition = 'none';
-    wrapEl.style.cursor = 'grabbing';
+    document.body.style.cursor = 'default';
   });
 
   // ── Wheel ──
@@ -1483,14 +1516,17 @@ document.addEventListener('mousemove', e => {
   });
 });
 document.addEventListener('mouseup', () => {
+  let anyDragging = false;
   _drums.forEach((d, id) => {
     if (!d.dragging) return;
+    anyDragging = true;
     d.dragging = false;
     d.wrapEl.style.cursor = '';
     d.offset += d.velY * 80;
     _snapToNearest(d, true);
     updateChips();
   });
+  if (anyDragging) document.body.style.cursor = '';
 });
 
 function setDrumVal(id, val) {
@@ -1564,6 +1600,9 @@ function _doRender(){
   $('yearLbl').textContent=year;
   const cal=$('calendar');cal.innerHTML='';
   const today=new Date();
+  const todayStr=today.toISOString().slice(0,10);
+  const setup=JSON.parse(localStorage.getItem('cal_setup_v1')||'null');
+  const startStr=setup&&setup.startDate?setup.startDate:null;
   let totH=0,totD=0,totA=0,totE=0;
 
   for(let m=0;m<12;m++){
@@ -1612,8 +1651,19 @@ function _doRender(){
       mH+=wH;mE+=eH;
       if(s.absent&&!isLun)mA++;
       if(isLun&&s.unlocked)mLun++;
-      if(!isLun&&!s.absent&&bH>0)totD++;
-      totE+=eH;
+      // statistiche globali: solo dal startDate fino a oggi, solo giorni con dati reali inseriti
+      const dayStr=k;
+      const inRange=(!startStr||dayStr>=startStr)&&dayStr<=todayStr;
+      if(inRange){
+        // conta ore solo se il giorno ha dati manuali salvati (orario inserito, assenza, unlock, ecc.)
+        const hasRealData=s.startH!=null||s.absent||s.unlocked||s.festaUnlocked||shiftDone;
+        if(hasRealData){
+          totH+=wH;
+          if(!isLun&&!s.absent&&bH>0)totD++;
+          totE+=eH;
+          if(s.absent&&!isLun)totA++;
+        }
+      }
       if(s.absent||s.unlocked||s.startH!=null||s.confirmed)hasData=true;
 
       let cls='day';
@@ -1666,7 +1716,6 @@ function _doRender(){
     mHead.querySelector('.month-btn').addEventListener('click',()=>openSummary(cm));
     mHead.querySelector('.month-btn-pdf').addEventListener('click',(e)=>{e.stopPropagation();showPdfToast(cm)});
     cal.appendChild(card);
-    totH+=mH;totA+=mA;
   }
 
   $('stH').textContent=totH.toFixed(0)+'h';
@@ -2168,7 +2217,11 @@ function applySetup(setup){
   if(t)t.innerHTML='Ciao, '+cap+' <span class="wave">👋</span>';
   setTimeout(()=>{const w=document.querySelector('.app-title .wave');if(w)w.classList.add('play')},3500);
   window._USER_ID_OVERRIDE='utente_'+setup.name.toLowerCase().replace(/\s+/g,'_').replace(/[^a-z0-9_]/g,'');
-  loadFromCloud();
+  loadFromCloud().then(()=>{
+    // dopo il caricamento, se abbiamo startDate locale salvala anche sul cloud (idempotente)
+    const s=JSON.parse(localStorage.getItem('cal_setup_v1')||'null');
+    if(s&&s.startDate) saveStartDateCloud(s.startDate);
+  });
   startRealtime();
 }
 
@@ -2590,7 +2643,7 @@ function applySetup(setup){
   $('introContinua').addEventListener('click',()=>{
     const name=nameInput.value.trim();
     const bdayDay=getDrumVal('bDayD'),bdayMonth=getDrumVal('bDayM');
-    const data={name,restDow:selRest,shifts:savedShifts,pauseMin:0,bdayDay,bdayMonth};
+    const data={name,restDow:selRest,shifts:savedShifts,pauseMin:0,bdayDay,bdayMonth,startDate:new Date().toISOString().slice(0,10)};
     localStorage.setItem(LS_SETUP,JSON.stringify(data));
     db={};localTs={};offlineQueue=[];
     localStorage.removeItem(LS_KEY);localStorage.removeItem(LS_TS_KEY);localStorage.removeItem(LS_QUEUE_KEY);
