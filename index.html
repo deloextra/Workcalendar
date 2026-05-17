@@ -700,6 +700,7 @@ body.sheet-open{overflow:hidden;position:fixed;width:100%}
         </div>
       </div>
     </div>
+    <button id="introGoLogin" style="margin-top:16px;background:none;border:none;color:var(--t2);font-size:15px;font-weight:500;font-family:inherit;cursor:pointer;padding:8px 16px;border-radius:100px;transition:color .15s">Hai già un account? <span style="color:var(--blue);font-weight:600">Accedi</span></button>
   </div>
 </div>
 
@@ -2858,6 +2859,17 @@ function showLoginScreen(){
       const intro=document.getElementById('introScreen');
       if(intro){intro.style.display='flex';intro.style.opacity='1';intro.classList.remove('fade-out');}
     }
+  });
+})();
+
+/* ════ ACCEDI DA INTRO ════ */
+(()=>{
+  const btn=document.getElementById('introGoLogin');
+  if(!btn) return;
+  btn.addEventListener('click',()=>{
+    const intro=document.getElementById('introScreen');
+    if(intro){intro.classList.add('fade-out');setTimeout(()=>intro.style.display='none',400);}
+    showLoginScreen();
   });
 })();
 
